@@ -1,20 +1,3 @@
-"""
-Create (or verify) the Pinecone index used by this project.
-
-Does not run embeddings — only ensures the serverless index exists with the
-correct dimension and metric. Safe to run multiple times.
-
-If the Pinecone **web console** shows no indexes but this script reports an
-index (or the opposite), your ``PINECONE_API_KEY`` is almost certainly from a
-**different Pinecone project**. Use API Keys from the same project you have
-open in the console (left sidebar → your project → API keys), copy the key
-into ``.env``, then run this script again.
-
-Usage:
-    python3 create_pinecone_index.py
-    python3 create_pinecone_index.py --list-only   # show what this API key sees
-"""
-
 import argparse
 
 from pinecone import Pinecone

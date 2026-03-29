@@ -1,11 +1,3 @@
-"""
-query.py — Query Pinecone, rerank with Gemini 2.0 Flash, and generate RCA summaries.
-
-Usage:
-    python query.py --query "Login page throws 500 error after OAuth redirect"
-    python query.py --query "..." --top-k 5
-"""
-
 import argparse
 import json
 import textwrap
@@ -23,13 +15,8 @@ from utils import (
 )
 
 
-# ──────────────────────────────────────────────
-# Step 1 — Embed the user query
-# ──────────────────────────────────────────────
-
 @retry(max_attempts=4, initial_delay=2.0, backoff=2.0)
 def embed_query(user_query: str) -> List[float]:
-    """Convert the user query string into a Gemini embedding vector."""
     genai = get_gemini_client()
     result = genai.embed_content(
         model=EMBEDDING_MODEL,
@@ -39,18 +26,10 @@ def embed_query(user_query: str) -> List[float]:
     return result["embedding"]
 
 
-# ──────────────────────────────────────────────
-# Step 2 — Retrieve from Pinecone
-# ──────────────────────────────────────────────
-
 def retrieve_from_pinecone(
     query_vector: List[float],
     top_k: int = TOP_K_RETRIEVAL,
 ) -> List[Dict[str, Any]]:
-    """
-    Query Pinecone and return a list of candidate defects with their
-    metadata and cosine similarity score.
-    """
     index = get_pinecone_index()
     response = index.query(
         vector=query_vector,
@@ -76,10 +55,6 @@ def retrieve_from_pinecone(
     logger.info("Retrieved %d candidates from Pinecone.", len(candidates))
     return candidates
 
-
-# ──────────────────────────────────────────────
-# Step 3 — Rerank with Gemini 2.0 Flash
-# ──────────────────────────────────────────────
 
 _RERANK_PROMPT_TEMPLATE = textwrap.dedent(
     """\
@@ -136,10 +111,6 @@ def rerank_candidates(
     candidates: List[Dict[str, Any]],
     top_k: int = TOP_K_RERANK,
 ) -> List[Dict[str, Any]]:
-    """
-    Use Gemini to rerank the retrieved candidates by duplicate likelihood.
-    Returns the top_k results, enriching each candidate with a rerank score.
-    """
     if not candidates:
         return []
 
@@ -152,7 +123,6 @@ def rerank_candidates(
     logger.info("Calling Gemini reranker (%s)…", RERANK_MODEL)
     raw = _call_gemini_rerank(prompt)
 
-    # Strip markdown fences if present
     cleaned = raw.strip()
     if cleaned.startswith("```"):
         cleaned = cleaned.split("\n", 1)[-1]
@@ -164,7 +134,6 @@ def rerank_candidates(
         logger.error("Failed to parse rerank response as JSON: %s\nRaw output:\n%s", exc, raw)
         raise ValueError(f"Reranker returned invalid JSON: {exc}") from exc
 
-    # Build a lookup for fast merge
     candidate_map = {c["key"]: c for c in candidates}
 
     merged: List[Dict[str, Any]] = []
@@ -187,10 +156,6 @@ def rerank_candidates(
     logger.info("Reranked to top %d results.", len(merged))
     return merged
 
-
-# ──────────────────────────────────────────────
-# Step 4 — RCA / Summary Generation
-# ──────────────────────────────────────────────
 
 _RCA_PROMPT_TEMPLATE = textwrap.dedent(
     """\
@@ -236,10 +201,6 @@ def generate_rca_summaries(
     user_query: str,
     reranked: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    """
-    For each reranked result, generate an RCA-style summary via Gemini.
-    Adds the 'rca_summary' field to each item.
-    """
     enriched = []
     for i, item in enumerate(reranked, 1):
         logger.info("Generating RCA for result %d/%d (%s)…", i, len(reranked), item["key"])
@@ -256,15 +217,10 @@ def generate_rca_summaries(
     return enriched
 
 
-# ──────────────────────────────────────────────
-# Step 5 — Final structured output
-# ──────────────────────────────────────────────
-
 def build_final_output(
     user_query: str,
     enriched_results: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """Assemble the final JSON-serialisable response."""
     results = []
     for item in enriched_results:
         results.append(
@@ -280,31 +236,11 @@ def build_final_output(
     return {"query": user_query, "results": results}
 
 
-# ──────────────────────────────────────────────
-# Public pipeline entry point
-# ──────────────────────────────────────────────
-
 def find_duplicates(
     user_query: str,
     top_k_retrieval: int = TOP_K_RETRIEVAL,
     top_k_rerank: int = TOP_K_RERANK,
 ) -> Dict[str, Any]:
-    """
-    End-to-end pipeline:
-      1. Embed the query
-      2. Retrieve candidates from Pinecone
-      3. Rerank with Gemini
-      4. Generate RCA summaries
-      5. Return structured JSON
-
-    Args:
-        user_query:      Free-text description of the new defect.
-        top_k_retrieval: How many candidates to pull from Pinecone (default 10).
-        top_k_rerank:    How many final results to return after reranking (default 5).
-
-    Returns:
-        Dict matching the documented output schema.
-    """
     logger.info("=== Duplicate detection pipeline started ===")
 
     query_vector = embed_query(user_query)
@@ -321,10 +257,6 @@ def find_duplicates(
     logger.info("=== Pipeline complete. Returning %d results. ===", len(output["results"]))
     return output
 
-
-# ──────────────────────────────────────────────
-# CLI entry point
-# ──────────────────────────────────────────────
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(

@@ -1,12 +1,3 @@
-"""
-ingestion.py — Load CSV, generate Gemini embeddings in batches, upload to Pinecone.
-
-Usage:
-    python ingestion.py                         # uses default CSV path from env / constant
-    python ingestion.py --csv "CSE bugs.csv"    # explicit path
-    python ingestion.py --csv "CSE bugs.csv" --reindex   # force re-embed everything
-"""
-
 import argparse
 import hashlib
 import json
@@ -29,31 +20,18 @@ from utils import (
     safe_str,
     get_gemini_client,
     get_pinecone_index,
-    PINECONE_INDEX_NAME,
 )
 
-# Maps issue key → SHA-256 of combined embedding text. When the CSV changes,
-# only rows whose content changed are re-embedded; Pinecone upsert overwrites
-# the same vector id (issue key) in place.
 CACHE_FILE = Path(__file__).parent / ".embedding_cache.json"
 
-DEFAULT_CSV = Path(__file__).parent / "CSE bugs.csv"
+DEFAULT_CSV = Path(__file__).parent / "defects.csv"
 
-
-# ──────────────────────────────────────────────
-# Cache helpers
-# ──────────────────────────────────────────────
 
 def _content_hash(combined_text: str) -> str:
     return hashlib.sha256(combined_text.encode("utf-8")).hexdigest()
 
 
 def load_cache() -> Dict[str, str]:
-    """
-    Return key → content-hash for rows already in sync with Pinecone.
-    Legacy format (JSON list of keys only) is migrated once: those keys are
-    treated as unknown hash so they are re-embedded on the next run.
-    """
     if not CACHE_FILE.exists():
         return {}
     with open(CACHE_FILE, "r") as fh:
@@ -70,20 +48,12 @@ def save_cache(cache: Dict[str, str]) -> None:
         json.dump(dict(sorted(cache.items())), fh, indent=0)
 
 
-# ──────────────────────────────────────────────
-# CSV loading
-# ──────────────────────────────────────────────
-
 def load_csv(csv_path: str | Path) -> pd.DataFrame:
-    """
-    Load the defect CSV and return a clean DataFrame with only the columns
-    we care about.  Multi-line cell values (Jira export quirk) are preserved.
-    """
     logger.info("Loading CSV from: %s", csv_path)
     df = pd.read_csv(
         csv_path,
         dtype=str,
-        keep_default_na=False,   # treat empty cells as "" not NaN
+        keep_default_na=False,
         na_values=[""],
         engine="python",
     )
@@ -95,20 +65,14 @@ def load_csv(csv_path: str | Path) -> pd.DataFrame:
 
     df = df[["Key", "Summary", "Description", "Comments"]].copy()
 
-    # Normalise whitespace / NaN
     for col in df.columns:
         df[col] = df[col].fillna("").astype(str).str.strip()
 
-    # Drop rows with no usable Key
     df = df[df["Key"].str.len() > 0].drop_duplicates(subset=["Key"]).reset_index(drop=True)
 
     logger.info("Loaded %d records after deduplication.", len(df))
     return df
 
-
-# ──────────────────────────────────────────────
-# Embedding generation (batched + quota-aware retries)
-# ──────────────────────────────────────────────
 
 def _is_quota_or_rate_limit(exc: BaseException) -> bool:
     if isinstance(exc, ResourceExhausted):
@@ -130,10 +94,6 @@ def _embed_batch_once(genai, texts: List[str]) -> List[List[float]]:
 
 
 def _embed_batch(genai, texts: List[str]) -> List[List[float]]:
-    """
-    Embed one API batch with retries. Uses long back-off on 429 / quota errors.
-    If the whole batch keeps failing, falls back to one text at a time.
-    """
     if not texts:
         return []
 
@@ -159,7 +119,6 @@ def _embed_batch(genai, texts: List[str]) -> List[List[float]]:
             )
             time.sleep(pause)
 
-    # Last resort: single-item calls (lower throughput but usually within limits)
     if len(texts) > 1:
         logger.warning(
             "Batch of %d still failing quota; embedding one row at a time…",
@@ -177,10 +136,6 @@ def _embed_batch(genai, texts: List[str]) -> List[List[float]]:
 
 
 def generate_embeddings(texts: List[str]) -> List[List[float]]:
-    """
-    Generate embeddings for a list of texts using batching.
-    Returns a list of float vectors in the same order as input.
-    """
     genai = get_gemini_client()
     all_embeddings: List[List[float]] = []
 
@@ -200,11 +155,7 @@ def generate_embeddings(texts: List[str]) -> List[List[float]]:
     return all_embeddings
 
 
-# ──────────────────────────────────────────────
-# Pinecone upsert (batched + retried)
-# ──────────────────────────────────────────────
-
-PINECONE_UPSERT_BATCH = 100   # Pinecone recommends ≤100 vectors per upsert
+PINECONE_UPSERT_BATCH = 100
 
 
 @retry(max_attempts=4, initial_delay=2.0, backoff=2.0)
@@ -217,7 +168,6 @@ def upsert_to_pinecone(
     records: List[Dict[str, Any]],
     embeddings: List[List[float]],
 ) -> None:
-    """Upsert all records + their embeddings to Pinecone in batches."""
     vectors = []
     for record, embedding in zip(records, embeddings):
         vectors.append(
@@ -247,12 +197,7 @@ def upsert_to_pinecone(
     logger.info("Upsert complete. Total vectors in index: %d", len(vectors))
 
 
-# ──────────────────────────────────────────────
-# Main ingestion pipeline
-# ──────────────────────────────────────────────
-
 def _prune_stale_vectors(index, stale_ids: List[str]) -> None:
-    """Remove vectors for issues no longer present in the source CSV."""
     if not stale_ids:
         return
     logger.info("Deleting %d vectors removed from source…", len(stale_ids))
@@ -262,18 +207,6 @@ def _prune_stale_vectors(index, stale_ids: List[str]) -> None:
 
 
 def run_ingestion(csv_path: str | Path, reindex: bool = False) -> None:
-    """
-    Full ingestion pipeline:
-      1. Load CSV
-      2. Delete vectors for keys that disappeared from the CSV (when not --reindex)
-      3. Re-embed only rows whose combined text changed (content-hash cache),
-         or all rows if --reindex
-      4. Upsert to Pinecone (same id = in-place update)
-      5. Persist content-hash cache
-
-    Frequent updates: run this on each new export; unchanged rows skip embedding
-    API calls; changed rows upsert over the same vector id.
-    """
     df = load_csv(csv_path)
     csv_keys = set(df["Key"].astype(str).str.strip())
     cache = load_cache()
@@ -285,8 +218,7 @@ def run_ingestion(csv_path: str | Path, reindex: bool = False) -> None:
         for k in stale:
             cache.pop(k, None)
 
-    # Rows that need (re)embedding
-    to_process: List[Tuple[str, str, str, str, str]] = []  # key, summary, desc, comments, combined
+    to_process: List[Tuple[str, str, str, str, str]] = []
     for _, row in df.iterrows():
         key = safe_str(row["Key"])
         summary = safe_str(row["Summary"])
@@ -326,16 +258,12 @@ def run_ingestion(csv_path: str | Path, reindex: bool = False) -> None:
     logger.info("Ingestion complete. %d records upserted.", len(records))
 
 
-# ──────────────────────────────────────────────
-# CLI entry point
-# ──────────────────────────────────────────────
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Ingest defect CSV into Pinecone.")
     parser.add_argument(
         "--csv",
         default=str(DEFAULT_CSV),
-        help="Path to the defect CSV file (default: 'CSE bugs.csv' in same directory).",
+        help="Path to the defect CSV (default: defects.csv next to this script).",
     )
     parser.add_argument(
         "--reindex",

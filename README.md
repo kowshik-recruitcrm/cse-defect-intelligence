@@ -33,11 +33,11 @@ python3 create_pinecone_index.py
 python3 create_pinecone_index.py --list-only
 ```
 
-**Ingest CSV** (default: `CSE bugs.csv`):
+**Ingest CSV** (default: `defects.csv` next to `ingestion.py`, or pass `--csv`):
 
 ```bash
 python3 ingestion.py
-python3 ingestion.py --csv "CSE bugs.csv" --reindex
+python3 ingestion.py --csv "your-export.csv" --reindex
 ```
 
 **Find duplicates for a query:**

@@ -1,11 +1,6 @@
-"""
-utils.py — Shared helper functions for the defect duplicate detection pipeline.
-"""
-
 import os
 import time
 import logging
-from typing import Optional
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -17,21 +12,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ──────────────────────────────────────────────
-# Configuration
-# ──────────────────────────────────────────────
-
 GOOGLE_API_KEY: str = os.environ["GOOGLE_API_KEY"]
 PINECONE_API_KEY: str = os.environ["PINECONE_API_KEY"]
 
-# Override with PINECONE_INDEX in .env if you use multiple environments.
 PINECONE_INDEX_NAME: str = os.environ.get("PINECONE_INDEX", "cse-defect-duplicates")
 PINECONE_CLOUD: str = os.environ.get("PINECONE_CLOUD", "aws")
 PINECONE_REGION: str = os.environ.get("PINECONE_REGION", "us-east-1")
 EMBEDDING_MODEL: str = "models/gemini-embedding-001"
 RERANK_MODEL: str = "gemini-2.5-flash-lite"
-EMBEDDING_DIMENSION: int = 3072         # gemini-embedding-001 output dimension
-# Smaller batches + pauses reduce 429 quota errors on free / low limits.
+EMBEDDING_DIMENSION: int = 3072
 BATCH_SIZE: int = int(os.environ.get("EMBED_BATCH_SIZE", "3"))
 EMBED_BATCH_PAUSE_SEC: float = float(os.environ.get("EMBED_BATCH_PAUSE_SEC", "2.5"))
 EMBED_MAX_RETRIES_PER_BATCH: int = int(os.environ.get("EMBED_MAX_RETRIES_PER_BATCH", "8"))
@@ -39,12 +28,8 @@ EMBED_QUOTA_RETRY_BASE_SEC: float = float(os.environ.get("EMBED_QUOTA_RETRY_BASE
 TOP_K_RETRIEVAL: int = 10
 TOP_K_RERANK: int = 5
 
-# ──────────────────────────────────────────────
-# Text helpers
-# ──────────────────────────────────────────────
 
 def safe_str(value) -> str:
-    """Return a clean string, replacing NaN/None with an empty string."""
     if value is None:
         return ""
     text = str(value).strip()
@@ -52,7 +37,6 @@ def safe_str(value) -> str:
 
 
 def build_combined_text(summary: str, description: str, comments: str) -> str:
-    """Combine defect fields into a single text block for embedding."""
     return (
         f"Summary: {safe_str(summary)}\n"
         f"Description: {safe_str(description)}\n"
@@ -60,14 +44,7 @@ def build_combined_text(summary: str, description: str, comments: str) -> str:
     )
 
 
-# ──────────────────────────────────────────────
-# Retry decorator
-# ──────────────────────────────────────────────
-
 def retry(max_attempts: int = 3, initial_delay: float = 2.0, backoff: float = 2.0):
-    """
-    Decorator that retries a function on exception with exponential back-off.
-    """
     def decorator(func):
         def wrapper(*args, **kwargs):
             delay = initial_delay
@@ -91,26 +68,13 @@ def retry(max_attempts: int = 3, initial_delay: float = 2.0, backoff: float = 2.
     return decorator
 
 
-# ──────────────────────────────────────────────
-# Gemini client factory
-# ──────────────────────────────────────────────
-
 def get_gemini_client():
-    """Return a configured google-generativeai module ready for use."""
     import google.generativeai as genai  # noqa: PLC0415
     genai.configure(api_key=GOOGLE_API_KEY)
     return genai
 
 
-# ──────────────────────────────────────────────
-# Pinecone client / index factory
-# ──────────────────────────────────────────────
-
 def ensure_pinecone_index(dimension: int = EMBEDDING_DIMENSION):
-    """
-    Create the Pinecone serverless index if it does not exist, then wait until ready.
-    Returns the Pinecone client (use .Index(name) to get the index handle).
-    """
     from pinecone import Pinecone, ServerlessSpec  # noqa: PLC0415
 
     pc = Pinecone(api_key=PINECONE_API_KEY)
@@ -141,6 +105,5 @@ def ensure_pinecone_index(dimension: int = EMBEDDING_DIMENSION):
 
 
 def get_pinecone_index(dimension: int = EMBEDDING_DIMENSION):
-    """Return the Pinecone Index handle, creating the index first if needed."""
     pc = ensure_pinecone_index(dimension=dimension)
     return pc.Index(PINECONE_INDEX_NAME)
