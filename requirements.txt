@@ -1,0 +1,4 @@
+pandas>=2.2.0
+google-generativeai>=0.8.0
+pinecone>=5.0.0
+python-dotenv>=1.0.0
